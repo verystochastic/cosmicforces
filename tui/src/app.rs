@@ -22,13 +22,13 @@ impl Observer {
             lat: std::env::var("COSMIC_LAT")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(51.5),
+                .unwrap_or(39.1031),
             lon: std::env::var("COSMIC_LON")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(-0.127),
+                .unwrap_or(-84.5120),
             name: std::env::var("COSMIC_LOCATION")
-                .unwrap_or_else(|_| "London".to_string()),
+                .unwrap_or_else(|_| "Cincinnati".to_string()),
         }
     }
 }
@@ -96,6 +96,23 @@ pub struct App {
 impl App {
     pub fn new() -> Self {
         let (guidance_tx, guidance_rx) = mpsc::channel();
+
+        // Birth chart: Painesville OH, Nov 21 1972, 12:00 noon EST (= 17:00 UTC)
+        let birth_dt = "1972-11-21T17:00:00Z"
+            .parse::<chrono::DateTime<Utc>>()
+            .expect("valid birth datetime");
+        let natal = calculate_chart(
+            BirthData {
+                datetime: birth_dt,
+                latitude: 41.7234,    // Painesville, OH
+                longitude: -81.2437,
+                timezone: "America/New_York".to_string(),
+            },
+            HouseSystem::Placidus,
+        )
+        .map(|c| c.planets)
+        .unwrap_or_else(|_| guidance::scott_natal());
+
         App {
             active_tab: 0,
             solar_events: Vec::new(),
@@ -106,7 +123,7 @@ impl App {
             last_refresh: Instant::now(),
             last_sky_update: Instant::now(),
             status: "Loading...".to_string(),
-            natal: guidance::scott_natal(),
+            natal,
             transit_aspects: Vec::new(),
             daily_guidance: guidance::DailyGuidance::new(),
             guidance_scroll: 0,

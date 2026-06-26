@@ -164,11 +164,7 @@ for them, given their natal chart. Be concrete — name actual signs and degrees
 Avoid generic astrology clichés. Reference the user's natal placements when explaining
 why a transit matters to them personally.
 
-NATAL CHART (Scott):
-  - Sun: 29.5° Scorpio
-  - Moon: 10.8° Gemini
-  - Ascendant: 24.1° Aquarius
-  - Chiron: 13.3° Aries
+NATAL CHART (Scott — born Painesville OH, Nov 21 1972, 12:00 noon):
 {natal_lines}
 
 TODAY ({today}) — CURRENT SKY:
