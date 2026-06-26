@@ -1,5 +1,6 @@
 mod app;
 mod astro;
+mod guidance;
 mod ui;
 
 use std::{
@@ -51,6 +52,25 @@ fn run(
             app.update_sky();
         }
 
+        // Receive guidance result from background thread
+        if let Ok(result) = app.guidance_rx.try_recv() {
+            match result {
+                Ok(text) => {
+                    let cache = guidance::GuidanceCache {
+                        date: chrono::Local::now().date_naive(),
+                        text,
+                    };
+                    guidance::save_cache(&cache);
+                    app.daily_guidance.cache = Some(cache);
+                    app.daily_guidance.status = guidance::GuidanceStatus::Ready;
+                    app.guidance_scroll = 0;
+                }
+                Err(e) => {
+                    app.daily_guidance.status = guidance::GuidanceStatus::Error(e);
+                }
+            }
+        }
+
         if event::poll(Duration::from_millis(250))? {
             if let Event::Key(key) = event::read()? {
                 match key.code {
@@ -61,6 +81,7 @@ fn run(
                     KeyCode::Char('1') => app.active_tab = 0,
                     KeyCode::Char('2') => app.active_tab = 1,
                     KeyCode::Char('3') => app.active_tab = 2,
+                    KeyCode::Char('4') => app.active_tab = 3,
                     KeyCode::Down | KeyCode::Char('j') => app.scroll_down(),
                     KeyCode::Up | KeyCode::Char('k') => app.scroll_up(),
                     _ => {}

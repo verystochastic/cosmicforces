@@ -9,6 +9,7 @@ use taivas_types::{AspectType, ZodiacSign};
 
 use crate::app::App;
 use crate::astro::{compass, format_utc, TwilightStatus};
+use crate::guidance::GuidanceStatus;
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
@@ -28,6 +29,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         0 => render_space_weather(f, app, layout[1]),
         1 => render_night_sky(f, app, layout[1]),
         2 => render_planets(f, app, layout[1]),
+        3 => render_reading(f, app, layout[1]),
         _ => {}
     }
 
@@ -37,7 +39,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
 // ── Header / tab bar ─────────────────────────────────────────────────────────
 
 fn render_header(f: &mut Frame, app: &App, area: Rect) {
-    let tabs = ["  Space Weather  ", "  Sky Now  ", "  Planets  "];
+    let tabs = ["  Space Weather  ", "  Sky Now  ", "  Planets  ", "  Reading  "];
 
     let mut spans = vec![Span::styled(
         " ✦ CosmicForces ",
@@ -606,5 +608,95 @@ fn render_planets(f: &mut Frame, app: &App, area: Rect) {
                 .border_style(Style::default().fg(Color::DarkGray)),
         ),
         chunks[1],
+    );
+}
+
+// ── Tab 4: Reading ────────────────────────────────────────────────────────────
+
+fn render_reading(f: &mut Frame, app: &App, area: Rect) {
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let title = format!(" Your Reading — {today} ");
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    match &app.daily_guidance.status {
+        GuidanceStatus::Idle => {
+            lines.push(Line::raw(""));
+            lines.push(Line::from(Span::styled(
+                "  Preparing your reading…",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        GuidanceStatus::Loading => {
+            lines.push(Line::raw(""));
+            lines.push(Line::from(Span::styled(
+                "  \u{27f3} Consulting the ephemeris\u{2026}",
+                Style::default().fg(Color::Cyan),
+            )));
+            lines.push(Line::raw(""));
+            lines.push(Line::from(Span::styled(
+                "  Ollama is generating your personalised astrological reading.",
+                Style::default().fg(Color::DarkGray),
+            )));
+            lines.push(Line::from(Span::styled(
+                "  This takes 10\u{2013}30 seconds on the first run each day.",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        GuidanceStatus::Error(e) => {
+            lines.push(Line::raw(""));
+            lines.push(Line::from(Span::styled(
+                "  \u{25b3} Could not reach Ollama",
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::raw(""));
+            lines.push(Line::from(Span::styled(
+                format!("  {e}"),
+                Style::default().fg(Color::DarkGray),
+            )));
+            lines.push(Line::raw(""));
+            lines.push(Line::from(Span::styled(
+                "  Make sure Ollama is running:  ollama serve",
+                Style::default().fg(Color::DarkGray),
+            )));
+            lines.push(Line::from(Span::styled(
+                "  Then pull a model:  ollama pull mistral",
+                Style::default().fg(Color::DarkGray),
+            )));
+            lines.push(Line::from(Span::styled(
+                "  Press [r] to retry.",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        GuidanceStatus::Ready => {
+            if let Some(ref cache) = app.daily_guidance.cache {
+                lines.push(Line::raw(""));
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        cache.text.clone(),
+                        Style::default().fg(Color::White),
+                    ),
+                ]));
+                lines.push(Line::raw(""));
+                lines.push(Line::from(Span::styled(
+                    format!("  \u{2736} Reading for {}  \u{2022}  [j/k] to scroll", cache.date),
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+        }
+    }
+
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title)
+                    .border_style(Style::default().fg(Color::DarkGray)),
+            )
+            .wrap(Wrap { trim: false })
+            .scroll((app.guidance_scroll, 0)),
+        area,
     );
 }

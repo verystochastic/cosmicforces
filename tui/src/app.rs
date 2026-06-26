@@ -1,12 +1,14 @@
+use std::sync::mpsc;
 use std::time::Instant;
 
 use chrono::Utc;
 use ratatui::widgets::TableState;
 use shared::SolarEvent;
 use taivas_calc::calculate_chart;
-use taivas_types::{BirthData, ChartData, HouseSystem};
+use taivas_types::{BirthData, CelestialBody, ChartData, HouseSystem, PlanetPosition};
 
 use crate::astro::{self, TwilightStatus};
+use crate::guidance;
 
 pub struct Observer {
     pub name: String,
@@ -83,10 +85,17 @@ pub struct App {
     pub last_refresh: Instant,
     pub last_sky_update: Instant,
     pub status: String,
+    pub natal: Vec<PlanetPosition>,
+    pub transit_aspects: Vec<guidance::TransitAspect>,
+    pub daily_guidance: guidance::DailyGuidance,
+    pub guidance_scroll: u16,
+    pub guidance_tx: mpsc::Sender<Result<String, String>>,
+    pub guidance_rx: mpsc::Receiver<Result<String, String>>,
 }
 
 impl App {
     pub fn new() -> Self {
+        let (guidance_tx, guidance_rx) = mpsc::channel();
         App {
             active_tab: 0,
             solar_events: Vec::new(),
@@ -97,58 +106,110 @@ impl App {
             last_refresh: Instant::now(),
             last_sky_update: Instant::now(),
             status: "Loading...".to_string(),
+            natal: guidance::scott_natal(),
+            transit_aspects: Vec::new(),
+            daily_guidance: guidance::DailyGuidance::new(),
+            guidance_scroll: 0,
+            guidance_tx,
+            guidance_rx,
         }
     }
 
     pub fn next_tab(&mut self) {
-        self.active_tab = (self.active_tab + 1) % 3;
+        self.active_tab = (self.active_tab + 1) % 4;
     }
 
     pub fn prev_tab(&mut self) {
-        self.active_tab = (self.active_tab + 2) % 3;
+        self.active_tab = (self.active_tab + 3) % 4;
     }
 
     pub fn scroll_down(&mut self) {
-        if self.active_tab == 0 {
-            let len = self.solar_events.len();
-            if len == 0 {
-                return;
+        match self.active_tab {
+            0 => {
+                let len = self.solar_events.len();
+                if len == 0 { return; }
+                let i = self.events_table.selected().map(|i| (i + 1) % len).unwrap_or(0);
+                self.events_table.select(Some(i));
             }
-            let i = self
-                .events_table
-                .selected()
-                .map(|i| (i + 1) % len)
-                .unwrap_or(0);
-            self.events_table.select(Some(i));
+            3 => { self.guidance_scroll = self.guidance_scroll.saturating_add(1); }
+            _ => {}
         }
     }
 
     pub fn scroll_up(&mut self) {
-        if self.active_tab == 0 {
-            let len = self.solar_events.len();
-            if len == 0 {
-                return;
+        match self.active_tab {
+            0 => {
+                let len = self.solar_events.len();
+                if len == 0 { return; }
+                let i = self.events_table.selected()
+                    .map(|i| if i == 0 { len - 1 } else { i - 1 })
+                    .unwrap_or(0);
+                self.events_table.select(Some(i));
             }
-            let i = self
-                .events_table
-                .selected()
-                .map(|i| if i == 0 { len - 1 } else { i - 1 })
-                .unwrap_or(0);
-            self.events_table.select(Some(i));
+            3 => { self.guidance_scroll = self.guidance_scroll.saturating_sub(1); }
+            _ => {}
         }
     }
 
-    /// Full refresh: fetch solar events + recompute sky.
+    /// Full refresh: fetch solar events + recompute sky + trigger guidance if stale.
     pub fn refresh(&mut self) {
         self.fetch_solar_events();
         self.compute_sky();
+        self.compute_transit_aspects();
+        self.trigger_daily_guidance();
         self.last_refresh = Instant::now();
     }
 
     /// Sky-only update (cheap, no network).
     pub fn update_sky(&mut self) {
         self.compute_sky();
+        self.compute_transit_aspects();
         self.last_sky_update = Instant::now();
+    }
+
+    fn compute_transit_aspects(&mut self) {
+        if let Some(ref chart) = self.chart {
+            self.transit_aspects = guidance::find_transit_aspects(&chart.planets, &self.natal);
+        }
+    }
+
+    pub fn trigger_daily_guidance(&mut self) {
+        if matches!(self.daily_guidance.status, guidance::GuidanceStatus::Loading) {
+            return;
+        }
+        if !guidance::should_regenerate(&self.daily_guidance.cache) {
+            self.daily_guidance.status = guidance::GuidanceStatus::Ready;
+            return;
+        }
+
+        let transit_planets = self.chart.as_ref()
+            .map(|c| c.planets.clone())
+            .unwrap_or_default();
+
+        let has_x_flare = self.solar_events.first()
+            .map(|e| e.intensity.starts_with('X'))
+            .unwrap_or(false);
+        let mercury_rx = transit_planets.iter()
+            .find(|p| p.body == CelestialBody::Mercury)
+            .map(|p| p.retrograde)
+            .unwrap_or(false);
+
+        let prompt = guidance::build_daily_prompt(
+            &transit_planets,
+            &self.natal,
+            &self.transit_aspects,
+            self.sky.moon_phase_name,
+            self.sky.moon_illumination,
+            mercury_rx,
+            has_x_flare,
+            self.sky.twilight.obs_quality(),
+        );
+
+        self.daily_guidance.status = guidance::GuidanceStatus::Loading;
+        let tx = self.guidance_tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(guidance::call_ollama_blocking(prompt));
+        });
     }
 
     fn fetch_solar_events(&mut self) {
