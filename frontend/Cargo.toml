@@ -1,0 +1,21 @@
+[package]
+name = "frontend"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dioxus = { version = "0.6", features = ["web"] }
+dioxus-tailwindcss = "0.8.0"
+shared = { path = "../shared" }
+reqwest = { version = "0.12.15", features = ["json"] }
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+
+# Add this for WASM-compatible async
+[dependencies.web-sys]
+version = "0.3"
+features = [
+    "Request",
+    "Window",
+    "Response"
+]

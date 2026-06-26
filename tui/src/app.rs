@@ -1,0 +1,239 @@
+use std::time::Instant;
+
+use chrono::Utc;
+use ratatui::widgets::TableState;
+use shared::SolarEvent;
+use taivas_calc::calculate_chart;
+use taivas_types::{BirthData, ChartData, HouseSystem};
+
+use crate::astro::{self, TwilightStatus};
+
+pub struct Observer {
+    pub name: String,
+    pub lat: f64,
+    pub lon: f64,
+}
+
+impl Observer {
+    pub fn from_env() -> Self {
+        Observer {
+            lat: std::env::var("COSMIC_LAT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(51.5),
+            lon: std::env::var("COSMIC_LON")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(-0.127),
+            name: std::env::var("COSMIC_LOCATION")
+                .unwrap_or_else(|_| "London".to_string()),
+        }
+    }
+}
+
+pub struct SkyData {
+    pub sun_alt: f64,
+    pub sun_az: f64,
+    pub sun_longitude: f64,
+    pub twilight: TwilightStatus,
+    pub moon_alt: f64,
+    pub moon_az: f64,
+    pub moon_longitude: f64,
+    pub _moon_phase_angle: f64,
+    pub moon_illumination: f64,
+    pub moon_phase_name: &'static str,
+    pub moon_phase_emoji: &'static str,
+    pub sunset: Option<f64>,
+    pub sunrise: Option<f64>,
+    pub astro_dusk: Option<f64>,
+    pub astro_dawn: Option<f64>,
+    pub planet_altaz: Vec<(f64, f64)>,
+}
+
+impl SkyData {
+    pub fn empty() -> Self {
+        SkyData {
+            sun_alt: 0.0,
+            sun_az: 0.0,
+            sun_longitude: 0.0,
+            twilight: TwilightStatus::Night,
+            moon_alt: 0.0,
+            moon_az: 0.0,
+            moon_longitude: 0.0,
+            _moon_phase_angle: 0.0,
+            moon_illumination: 0.0,
+            moon_phase_name: "—",
+            moon_phase_emoji: "☽",
+            sunset: None,
+            sunrise: None,
+            astro_dusk: None,
+            astro_dawn: None,
+            planet_altaz: Vec::new(),
+        }
+    }
+}
+
+pub struct App {
+    pub active_tab: usize,
+    pub solar_events: Vec<SolarEvent>,
+    pub events_table: TableState,
+    pub chart: Option<ChartData>,
+    pub sky: SkyData,
+    pub observer: Observer,
+    pub last_refresh: Instant,
+    pub last_sky_update: Instant,
+    pub status: String,
+}
+
+impl App {
+    pub fn new() -> Self {
+        App {
+            active_tab: 0,
+            solar_events: Vec::new(),
+            events_table: TableState::default(),
+            chart: None,
+            sky: SkyData::empty(),
+            observer: Observer::from_env(),
+            last_refresh: Instant::now(),
+            last_sky_update: Instant::now(),
+            status: "Loading...".to_string(),
+        }
+    }
+
+    pub fn next_tab(&mut self) {
+        self.active_tab = (self.active_tab + 1) % 3;
+    }
+
+    pub fn prev_tab(&mut self) {
+        self.active_tab = (self.active_tab + 2) % 3;
+    }
+
+    pub fn scroll_down(&mut self) {
+        if self.active_tab == 0 {
+            let len = self.solar_events.len();
+            if len == 0 {
+                return;
+            }
+            let i = self
+                .events_table
+                .selected()
+                .map(|i| (i + 1) % len)
+                .unwrap_or(0);
+            self.events_table.select(Some(i));
+        }
+    }
+
+    pub fn scroll_up(&mut self) {
+        if self.active_tab == 0 {
+            let len = self.solar_events.len();
+            if len == 0 {
+                return;
+            }
+            let i = self
+                .events_table
+                .selected()
+                .map(|i| if i == 0 { len - 1 } else { i - 1 })
+                .unwrap_or(0);
+            self.events_table.select(Some(i));
+        }
+    }
+
+    /// Full refresh: fetch solar events + recompute sky.
+    pub fn refresh(&mut self) {
+        self.fetch_solar_events();
+        self.compute_sky();
+        self.last_refresh = Instant::now();
+    }
+
+    /// Sky-only update (cheap, no network).
+    pub fn update_sky(&mut self) {
+        self.compute_sky();
+        self.last_sky_update = Instant::now();
+    }
+
+    fn fetch_solar_events(&mut self) {
+        match reqwest::blocking::get("http://localhost:8080/api/events") {
+            Ok(resp) => match resp.json::<Vec<SolarEvent>>() {
+                Ok(mut events) => {
+                    // most recent first
+                    events.sort_by(|a, b| b.peak_time.cmp(&a.peak_time));
+                    self.solar_events = events;
+                    self.status = format!(
+                        "{} solar events  •  observer: {}",
+                        self.solar_events.len(),
+                        self.observer.name
+                    );
+                }
+                Err(e) => {
+                    self.status = format!("Parse error: {e}");
+                }
+            },
+            Err(_) => {
+                self.status = format!(
+                    "Backend offline — sky data live  •  observer: {}",
+                    self.observer.name
+                );
+            }
+        }
+    }
+
+    fn compute_sky(&mut self) {
+        let now = Utc::now();
+        let jd = astro::julian_date(&now);
+        let lat = self.observer.lat;
+        let lon = self.observer.lon;
+
+        let birth_data = BirthData {
+            datetime: now,
+            latitude: lat,
+            longitude: lon,
+            timezone: "UTC".to_string(),
+        };
+
+        match calculate_chart(birth_data, HouseSystem::Placidus) {
+            Ok(chart) => {
+                let sun_lon = chart.sun().map(|p| p.longitude).unwrap_or(0.0);
+                let sun_lat = chart.sun().map(|p| p.latitude).unwrap_or(0.0);
+                let (sun_alt, sun_az) = astro::body_altitude(sun_lon, sun_lat, jd, lat, lon);
+
+                let moon_lon = chart.moon().map(|p| p.longitude).unwrap_or(0.0);
+                let moon_lat = chart.moon().map(|p| p.latitude).unwrap_or(0.0);
+                let (moon_alt, moon_az) = astro::body_altitude(moon_lon, moon_lat, jd, lat, lon);
+
+                let phase = astro::moon_phase_angle(sun_lon, moon_lon);
+
+                let (sunrise, sunset) = astro::solar_horizon_times(jd, lat, lon, -0.8333);
+                let (astro_dawn, astro_dusk) = astro::solar_horizon_times(jd, lat, lon, -18.0);
+
+                let planet_altaz = chart
+                    .planets
+                    .iter()
+                    .map(|p| astro::body_altitude(p.longitude, p.latitude, jd, lat, lon))
+                    .collect();
+
+                self.sky = SkyData {
+                    sun_alt,
+                    sun_az,
+                    sun_longitude: sun_lon,
+                    twilight: TwilightStatus::from_sun_altitude(sun_alt),
+                    moon_alt,
+                    moon_az,
+                    moon_longitude: moon_lon,
+                    _moon_phase_angle: phase,
+                    moon_illumination: astro::moon_illumination(phase),
+                    moon_phase_name: astro::moon_phase_name(phase),
+                    moon_phase_emoji: astro::moon_phase_emoji(phase),
+                    sunset,
+                    sunrise,
+                    astro_dusk,
+                    astro_dawn,
+                    planet_altaz,
+                };
+                self.chart = Some(chart);
+            }
+            Err(e) => {
+                self.status = format!("Calc error: {e}");
+            }
+        }
+    }
+}
