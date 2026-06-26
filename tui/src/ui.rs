@@ -26,10 +26,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
     render_header(f, app, layout[0]);
 
     match app.active_tab {
-        0 => render_space_weather(f, app, layout[1]),
-        1 => render_night_sky(f, app, layout[1]),
-        2 => render_planets(f, app, layout[1]),
-        3 => render_reading(f, app, layout[1]),
+        0 => render_overview(f, app, layout[1]),
+        1 => render_space_weather(f, app, layout[1]),
+        2 => render_night_sky(f, app, layout[1]),
+        3 => render_planets(f, app, layout[1]),
         _ => {}
     }
 
@@ -39,7 +39,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
 // ── Header / tab bar ─────────────────────────────────────────────────────────
 
 fn render_header(f: &mut Frame, app: &App, area: Rect) {
-    let tabs = ["  Space Weather  ", "  Sky Now  ", "  Planets  ", "  Reading  "];
+    let tabs = ["  Overview  ", "  Space Weather  ", "  Sky Now  ", "  Planets  "];
 
     let mut spans = vec![Span::styled(
         " ✦ CosmicForces ",
@@ -98,6 +98,139 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
             .block(Block::default().borders(Borders::TOP).border_style(
                 Style::default().fg(Color::DarkGray),
             )),
+        area,
+    );
+}
+
+// ── Tab 0: Overview ──────────────────────────────────────────────────────────
+
+fn render_overview(f: &mut Frame, app: &App, area: Rect) {
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(area);
+
+    let left = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(8), Constraint::Min(0)])
+        .split(cols[0]);
+
+    render_sky_summary(f, app, left[0]);
+    render_planets_compact(f, app, left[1]);
+    render_reading(f, app, cols[1]);
+}
+
+fn render_sky_summary(f: &mut Frame, app: &App, area: Rect) {
+    let sky = &app.sky;
+    let moon_sign = ZodiacSign::from_longitude(sky.moon_longitude);
+    let moon_deg = ZodiacSign::degree_in_sign(sky.moon_longitude);
+    let sun_sign = ZodiacSign::from_longitude(sky.sun_longitude);
+    let sun_deg = ZodiacSign::degree_in_sign(sky.sun_longitude);
+
+    let strongest = app.solar_events.iter()
+        .max_by_key(|e| class_rank(&e.intensity))
+        .map(|e| e.intensity.as_str())
+        .unwrap_or("None");
+    let x_count = app.solar_events.iter().filter(|e| e.intensity.starts_with('X')).count();
+    let m_count = app.solar_events.iter().filter(|e| e.intensity.starts_with('M')).count();
+
+    let tc = twilight_color(sky.twilight);
+    let moon_color = if sky.moon_illumination > 90.0 { Color::Yellow }
+        else if sky.moon_illumination > 50.0 { Color::White }
+        else { Color::Gray };
+
+    let lines = vec![
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("  Moon    ", Style::default().fg(Color::DarkGray)),
+            Span::raw(format!("{}  ", sky.moon_phase_emoji)),
+            Span::styled(sky.moon_phase_name, Style::default().fg(moon_color).add_modifier(Modifier::BOLD)),
+            Span::raw(format!("  {:.0}%   {:.1}° {} {}", sky.moon_illumination, moon_deg, moon_sign.glyph(), moon_sign)),
+        ]),
+        Line::from(vec![
+            Span::styled("  Sun     ", Style::default().fg(Color::DarkGray)),
+            Span::raw(format!("{:.1}° {} {}   ", sun_deg, sun_sign.glyph(), sun_sign)),
+            Span::styled(sky.twilight.label(), Style::default().fg(tc)),
+            Span::raw(format!("  ({:+.1}°)", sky.sun_alt)),
+        ]),
+        Line::from(vec![
+            Span::styled("  Flares  ", Style::default().fg(Color::DarkGray)),
+            Span::raw(format!("{}  (X:{}  M:{})   peak: ", app.solar_events.len(), x_count, m_count)),
+            Span::styled(strongest, Style::default().fg(intensity_color(strongest)).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(vec![
+            Span::styled("  Sky     ", Style::default().fg(Color::DarkGray)),
+            Span::styled(sky.twilight.obs_quality(), Style::default().fg(Color::Yellow)),
+            Span::raw(format!("   {}   {}", app.observer.name, chrono::Utc::now().format("%H:%M UTC"))),
+        ]),
+        Line::raw(""),
+    ];
+
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Sky Status ")
+                .border_style(Style::default().fg(Color::DarkGray)),
+        ),
+        area,
+    );
+}
+
+fn render_planets_compact(f: &mut Frame, app: &App, area: Rect) {
+    let Some(ref chart) = app.chart else {
+        f.render_widget(
+            Paragraph::new("Computing planetary positions...")
+                .block(Block::default().borders(Borders::ALL)),
+            area,
+        );
+        return;
+    };
+
+    let header = Row::new(["", "Body", "Sign & Degree", "Alt", "Rx"])
+        .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+        .height(1);
+
+    let rows: Vec<Row> = chart.planets.iter()
+        .zip(app.sky.planet_altaz.iter().chain(std::iter::repeat(&(0.0_f64, 0.0_f64))))
+        .map(|(planet, &(alt, _))| {
+            let visible = alt > 0.0;
+            let dim = Style::default().fg(Color::DarkGray);
+            let normal = Style::default();
+            let sign_str = format!("{:.1}° {} {}", planet.degree_in_sign, planet.sign.glyph(), planet.sign);
+            let rx_str = if planet.retrograde { "Rx" } else { "" };
+            Row::new([
+                Cell::from(planet.body.glyph()),
+                Cell::from(planet.body.name()),
+                Cell::from(sign_str),
+                Cell::from(format!("{:+.1}°", alt)).style(if visible {
+                    Style::default().fg(Color::Green)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                }),
+                Cell::from(rx_str).style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
+            ])
+            .style(if visible { normal } else { dim })
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Length(3),
+        Constraint::Length(10),
+        Constraint::Min(0),
+        Constraint::Length(7),
+        Constraint::Length(4),
+    ];
+
+    f.render_widget(
+        Table::new(rows, widths)
+            .header(header)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" Planets — {} ", chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")))
+                    .border_style(Style::default().fg(Color::DarkGray)),
+            ),
         area,
     );
 }

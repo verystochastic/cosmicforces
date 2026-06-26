@@ -125,20 +125,21 @@ impl App {
 
     pub fn scroll_down(&mut self) {
         match self.active_tab {
-            0 => {
+            0 => { self.guidance_scroll = self.guidance_scroll.saturating_add(1); }
+            1 => {
                 let len = self.solar_events.len();
                 if len == 0 { return; }
                 let i = self.events_table.selected().map(|i| (i + 1) % len).unwrap_or(0);
                 self.events_table.select(Some(i));
             }
-            3 => { self.guidance_scroll = self.guidance_scroll.saturating_add(1); }
             _ => {}
         }
     }
 
     pub fn scroll_up(&mut self) {
         match self.active_tab {
-            0 => {
+            0 => { self.guidance_scroll = self.guidance_scroll.saturating_sub(1); }
+            1 => {
                 let len = self.solar_events.len();
                 if len == 0 { return; }
                 let i = self.events_table.selected()
@@ -146,7 +147,6 @@ impl App {
                     .unwrap_or(0);
                 self.events_table.select(Some(i));
             }
-            3 => { self.guidance_scroll = self.guidance_scroll.saturating_sub(1); }
             _ => {}
         }
     }
